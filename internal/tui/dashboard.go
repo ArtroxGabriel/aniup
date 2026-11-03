@@ -95,19 +95,20 @@ func ParseNvidiaSMIOutput(csvOut string) (int, int, error) {
 
 // DashboardModel is the Bubble Tea model for Phase 4 real-time pipeline execution.
 type DashboardModel struct {
-	ctx        context.Context
-	cancel     context.CancelFunc
-	cfg        config.RunConfig
-	meta       probe.VideoMetadata
-	events     <-chan pipeline.Event
-	telemetry  TelemetryReader
-	startTime  time.Time
-	globalProg progress.Model
-	chunkProg  progress.Model
-	spin       spinner.Model
-	lastEvent  pipeline.Event
-	lastTelem  TelemetryMsg
-	aborted    bool
+	ctx           context.Context
+	cancel        context.CancelFunc
+	cfg           config.RunConfig
+	meta          probe.VideoMetadata
+	events        <-chan pipeline.Event
+	telemetry     TelemetryReader
+	startTime     time.Time
+	initialFrames int
+	globalProg    progress.Model
+	chunkProg     progress.Model
+	spin          spinner.Model
+	lastEvent     pipeline.Event
+	lastTelem     TelemetryMsg
+	aborted       bool
 }
 
 // NewDashboardModel constructs a Bubble Tea DashboardModel.
@@ -123,16 +124,17 @@ func NewDashboardModel(
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	return DashboardModel{
-		ctx:        ctx,
-		cancel:     cancel,
-		cfg:        cfg,
-		meta:       meta,
-		events:     events,
-		telemetry:  telemetry,
-		startTime:  time.Now(),
-		globalProg: progress.New(progress.WithDefaultGradient()),
-		chunkProg:  progress.New(progress.WithSolidFill("#04B575")),
-		spin:       sp,
+		ctx:           ctx,
+		cancel:        cancel,
+		cfg:           cfg,
+		meta:          meta,
+		events:        events,
+		telemetry:     telemetry,
+		startTime:     time.Now(),
+		initialFrames: -1,
+		globalProg:    progress.New(progress.WithDefaultGradient()),
+		chunkProg:     progress.New(progress.WithSolidFill("#04B575")),
+		spin:          sp,
 	}
 }
 
@@ -153,6 +155,12 @@ func (m DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 	case ProgressMsg:
+		if m.initialFrames < 0 {
+			m.initialFrames = typed.Event.FramesDone
+		}
+		if typed.Event.FramesDone < m.lastEvent.FramesDone {
+			typed.Event.FramesDone = m.lastEvent.FramesDone
+		}
 		m.lastEvent = typed.Event
 		if typed.Event.Done || typed.Event.Err != nil {
 			return m, tea.Quit
@@ -211,7 +219,8 @@ func (m DashboardModel) renderGlobalProgress() string {
 	totalFrames := max(m.lastEvent.TotalFrames, m.meta.TotalFrames, 1)
 	ratio := float64(m.lastEvent.FramesDone) / float64(totalFrames)
 	elapsed := max(time.Since(m.startTime).Seconds(), 0.1)
-	avgFPS := float64(m.lastEvent.FramesDone) / elapsed
+	sessionFrames := max(m.lastEvent.FramesDone-max(m.initialFrames, 0), 0)
+	avgFPS := float64(sessionFrames) / elapsed
 	var etaStr string
 	if avgFPS > 0.01 && m.lastEvent.FramesDone < totalFrames {
 		remSec := float64(totalFrames-m.lastEvent.FramesDone) / avgFPS

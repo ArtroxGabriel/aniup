@@ -153,10 +153,13 @@ func TestWizardHelpersAndDashboardStagesAndTelemetry(t *testing.T) {
 	_ = dash.Init()
 
 	for _, st := range []pipeline.StageType{pipeline.StageExtracting, pipeline.StageEncoding, pipeline.StageConcatenating} {
-		m, _ := dash.Update(tui.ProgressMsg{Event: pipeline.Event{Stage: st, TotalChunks: 1, TotalFrames: 600}})
+		m, _ := dash.Update(tui.ProgressMsg{Event: pipeline.Event{Stage: st, TotalChunks: 1, TotalFrames: 600, FramesDone: 100}})
 		dash = m.(tui.DashboardModel)
 		_ = dash.View()
 	}
+	// Verify FramesDone never regresses if a lower value arrives
+	mRegress, _ := dash.Update(tui.ProgressMsg{Event: pipeline.Event{Stage: pipeline.StageUpscaling, TotalChunks: 1, TotalFrames: 600, FramesDone: 10}})
+	dash = mRegress.(tui.DashboardModel)
 	mTelem, _ := dash.Update(tui.TelemetryMsg{ShmUsedBytes: 1024 * 1024, VRAMUsedMiB: 2048, GPUTempC: 60, GPUAvailable: true})
 	dash = mTelem.(tui.DashboardModel)
 	if !strings.Contains(dash.View(), "2048 MiB") {

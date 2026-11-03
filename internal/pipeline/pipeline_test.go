@@ -294,3 +294,70 @@ func TestOSProcessExecutorAndResumeSkipsCompletedChunks(t *testing.T) {
 		t.Fatalf("expected workDir to be preserved when KeepChunks=true: %v", err)
 	}
 }
+
+// FakePerFrameNCNNExecutor simulates NCNN printing 0.00% -> 50.00% per frame while writing PNGs to outDir.
+type FakePerFrameNCNNExecutor struct {
+	OutDir string
+	Frames int
+}
+
+func (f *FakePerFrameNCNNExecutor) Run(_ context.Context, _ []string, _ string, _ ...string) error {
+	return nil
+}
+
+func (f *FakePerFrameNCNNExecutor) RunWithStderr(_ context.Context, _ []string, onLine func(string), _ string, _ ...string) error {
+	for i := 1; i <= f.Frames; i++ {
+		onLine("0.00%")
+		onLine("50.00%")
+		framePath := filepath.Join(f.OutDir, filepath.Base(filepath.Join("out", "frame_0000000"+string(rune('0'+i))+".png")))
+		_ = os.WriteFile(framePath, []byte("png"), 0o600)
+		onLine("0.00%")
+	}
+	return nil
+}
+
+func TestUpscaleChunkComputesMonotonicProgressAcrossDirectoryFrames(t *testing.T) {
+	// Arrange: 4 input frames in inDir
+	tmpDir := t.TempDir()
+	inDir := filepath.Join(tmpDir, "in")
+	outDir := filepath.Join(tmpDir, "out")
+	_ = os.MkdirAll(inDir, 0o700)
+	_ = os.MkdirAll(outDir, 0o700)
+	for i := 1; i <= 4; i++ {
+		name := filepath.Join(inDir, "frame_0000000"+string(rune('0'+i))+".png")
+		if err := os.WriteFile(name, []byte("in-png"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cfg := config.RunConfig{
+		Engine:  config.EngineRealESRGAN,
+		Model:   "realesr-animevideov3",
+		Scale:   2,
+		Profile: config.ProfileTurbo,
+	}
+	fakeNCNN := &FakePerFrameNCNNExecutor{OutDir: outDir, Frames: 4}
+
+	// Act
+	var history []float64
+	err := pipeline.UpscaleChunk(context.Background(), fakeNCNN, "realesrgan-ncnn-vulkan", cfg, inDir, outDir, func(pct float64) {
+		history = append(history, pct)
+	})
+	if err != nil {
+		t.Fatalf("unexpected UpscaleChunk error: %v", err)
+	}
+
+	// Assert: progress must be strictly non-decreasing (never blinking 50% -> 0%)
+	if len(history) == 0 {
+		t.Fatal("expected progress callbacks to be emitted")
+	}
+	for i := 1; i < len(history); i++ {
+		if history[i] < history[i-1] {
+			t.Fatalf("progress went backward (blinked) at index %d: %v", i, history)
+		}
+	}
+	// On frame 1 tile 2 (50% of 1 frame out of 4), progress should be ~12.5%, NOT 50% of the whole chunk
+	if history[0] > 20.0 {
+		t.Fatalf("expected first frame tile progress <= 20%%, got %.2f%% (history=%v)", history[0], history)
+	}
+}
