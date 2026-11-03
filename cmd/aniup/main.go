@@ -31,9 +31,12 @@ type CLIFlags struct {
 	ChunkSize  int
 	Encoder    string
 	Resume     bool
+	Drop       bool
 	KeepChunks bool
 	ShowHelp   bool
 }
+
+var errCheckpointDropped = errors.New("checkpoint dropped by user")
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -62,6 +65,9 @@ func runApp(
 	}
 	if isDoctor {
 		return RunDoctor(ctx, inspector, out)
+	}
+	if flags.Drop {
+		return runDropCheckpoint(flags.InputPath, out)
 	}
 	if err := executeMainFlow(ctx, cancel, inspector, procExec, flags, out, headless); err != nil {
 		_, _ = fmt.Fprintf(out, "Erro: %v\n", err)
@@ -95,6 +101,7 @@ func ParseCLIArgs(args []string) (CLIFlags, bool, error) {
 	fs.IntVar(&f.ChunkSize, "chunk-size", 0, "Tamanho do chunk em frames (padrão 600)")
 	fs.StringVar(&f.Encoder, "encoder", "", "Encoder NVENC (hevc_nvenc ou av1_nvenc)")
 	fs.BoolVar(&f.Resume, "resume", false, "Retomar automaticamente de checkpoint existente")
+	fs.BoolVar(&f.Drop, "drop", false, "Descartar e remover checkpoint existente do vídeo e sair")
 	fs.BoolVar(&f.KeepChunks, "keep-chunks", false, "Manter diretório oculto de chunks após concatenação")
 
 	if err := fs.Parse(args); err != nil {
@@ -132,6 +139,7 @@ FLAGS:
       --chunk-size int    Tamanho do chunk em frames no /dev/shm (padrão: 600)
       --encoder string    Encoder NVIDIA NVENC: hevc_nvenc (padrão, CQ 19 p6) | av1_nvenc
       --resume            Retomar automaticamente de checkpoint existente (.aniup_<video>_<scale>x)
+      --drop              Descartar e apagar checkpoint existente do vídeo e sair
       --keep-chunks       Manter diretório oculto de chunks após a concatenação final
   -h, --help              Exibir esta mensagem de ajuda e sair
 
@@ -184,6 +192,10 @@ func executeMainFlow(
 
 	cfg, meta, err := resolveConfigAndProbe(ctx, inspector, report, flags)
 	if err != nil {
+		if errors.Is(err, errCheckpointDropped) {
+			_, _ = fmt.Fprintf(out, "✓ Checkpoint descartado e arquivos temporários removidos para %q.\n", flags.InputPath)
+			return nil
+		}
 		return err
 	}
 	workDir, manifest, err := prepareCheckpointManifest(cfg, meta, NeedsWizard(flags))
@@ -192,10 +204,26 @@ func executeMainFlow(
 	}
 	err = runPipelineWithDashboard(ctx, cancel, report, procExec, cfg, meta, workDir, manifest, headless)
 	if errors.Is(err, context.Canceled) {
-		_, _ = fmt.Fprintf(out, "\n✓ Pausado com segurança (/dev/shm limpo). Para retomar de onde parou, execute:\n  aniup %q\n", cfg.InputPath)
+		_, _ = fmt.Fprintf(out, "\n✓ Pausado com segurança (/dev/shm limpo).\n  • Para retomar  : aniup %q\n  • Para descartar: aniup --drop %q\n", cfg.InputPath, cfg.InputPath)
 		return nil
 	}
 	return err
+}
+
+func runDropCheckpoint(inputPath string, out io.Writer) int {
+	removed, err := state.DropCheckpoints(inputPath)
+	if err != nil {
+		_, _ = fmt.Fprintf(out, "Erro ao descartar checkpoint: %v\n", err)
+		return 1
+	}
+	if len(removed) == 0 {
+		_, _ = fmt.Fprintf(out, "Nenhum checkpoint encontrado para %q.\n", inputPath)
+		return 0
+	}
+	for _, dir := range removed {
+		_, _ = fmt.Fprintf(out, "✓ Checkpoint descartado e removido: %s\n", dir)
+	}
+	return 0
 }
 
 func resolveConfigAndProbe(
@@ -252,16 +280,21 @@ func resolveFromCheckpointOrWizard(
 	freeShmBytes uint64,
 ) (config.RunConfig, error) {
 	if _, existing, ok := state.FindExistingManifest(initial.InputPath); ok {
-		resume := initial.Resume
-		if !resume {
-			var err error
-			resume, err = tui.PromptResumeCheckpoint(existing.CompletedCount(), len(existing.Chunks))
-			if err != nil {
-				return config.RunConfig{}, err
-			}
-		}
-		if resume {
+		if initial.Resume {
 			return configFromManifest(initial, existing), nil
+		}
+		action, err := tui.PromptCheckpointAction(existing.CompletedCount(), len(existing.Chunks))
+		if err != nil {
+			return config.RunConfig{}, err
+		}
+		switch action {
+		case tui.CheckpointResume:
+			return configFromManifest(initial, existing), nil
+		case tui.CheckpointDrop:
+			_, _ = state.DropCheckpoints(initial.InputPath)
+			return config.RunConfig{}, errCheckpointDropped
+		case tui.CheckpointRestart:
+			_, _ = state.DropCheckpoints(initial.InputPath)
 		}
 	}
 	return tui.RunWizard(initial, availableEngines, freeShmBytes)
@@ -314,6 +347,7 @@ func prepareCheckpointManifest(
 			}
 		}
 	}
+	_ = os.RemoveAll(workDir)
 	fresh := state.NewManifest(cfg, inputHash, meta.TotalFrames, meta.FrameRateRatio)
 	if err := state.SaveManifest(workDir, fresh); err != nil {
 		return "", nil, err

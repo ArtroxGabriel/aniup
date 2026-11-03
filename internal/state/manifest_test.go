@@ -179,4 +179,13 @@ func TestFindExistingManifestDetectsValidCheckpointForInputFile(t *testing.T) {
 	if _, _, ok := state.FindExistingManifest(filepath.Join(tmpDir, "missing.mp4")); ok {
 		t.Fatal("expected false for nonexistent file")
 	}
+
+	// Act: DropCheckpoints removes the checkpoint directory and all segment files
+	removed, err := state.DropCheckpoints(inputPath)
+	if err != nil || len(removed) != 1 || removed[0] != workDir {
+		t.Fatalf("expected DropCheckpoints to remove %q, got removed=%v err=%v", workDir, removed, err)
+	}
+	if _, _, ok := state.FindExistingManifest(inputPath); ok {
+		t.Fatal("expected FindExistingManifest to return false after DropCheckpoints")
+	}
 }

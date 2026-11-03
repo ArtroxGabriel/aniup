@@ -72,20 +72,39 @@ func RunWizard(
 	return AssembleWizardConfig(initial, inputPath, engineModelKey, scale, profile, chunkSizeStr, encoder, freeShmBytes)
 }
 
+// CheckpointAction represents the user's decision when an unfinished checkpoint is detected.
+type CheckpointAction string
+
+const (
+	CheckpointResume  CheckpointAction = "resume"
+	CheckpointRestart CheckpointAction = "restart"
+	CheckpointDrop    CheckpointAction = "drop"
+)
+
+// PromptCheckpointAction asks the user via Huh whether to resume, restart from scratch, or drop the checkpoint and exit.
+// Example: action, err := tui.PromptCheckpointAction(14, 48)
+func PromptCheckpointAction(completedChunks, totalChunks int) (CheckpointAction, error) {
+	action := string(CheckpointResume)
+	title := fmt.Sprintf("Checkpoint detectado (%d/%d chunks concluídos). O que deseja fazer?", completedChunks, totalChunks)
+	sel := huh.NewSelect[string]().
+		Title(title).
+		Options(
+			huh.NewOption("Retomar de onde parou (continuar dos chunks pendentes)", string(CheckpointResume)),
+			huh.NewOption("Recomeçar do zero (apagar checkpoint atual e reconfigurar)", string(CheckpointRestart)),
+			huh.NewOption("Descartar upscale e sair (apagar checkpoint e liberar espaço)", string(CheckpointDrop)),
+		).
+		Value(&action)
+	if err := huh.NewForm(huh.NewGroup(sel)).Run(); err != nil {
+		return "", err
+	}
+	return CheckpointAction(action), nil
+}
+
 // PromptResumeCheckpoint asks the user via Huh whether to resume from an existing compatible manifest.json.
 // Example: resume, err := tui.PromptResumeCheckpoint(14, 48)
 func PromptResumeCheckpoint(completedChunks, totalChunks int) (bool, error) {
-	resume := true
-	title := fmt.Sprintf("Checkpoint detectado (%d/%d chunks concluídos). Deseja retomar de onde parou?", completedChunks, totalChunks)
-	confirm := huh.NewConfirm().
-		Title(title).
-		Affirmative("Sim, retomar").
-		Negative("Não, recomeçar do zero").
-		Value(&resume)
-	if err := huh.NewForm(huh.NewGroup(confirm)).Run(); err != nil {
-		return false, err
-	}
-	return resume, nil
+	action, err := PromptCheckpointAction(completedChunks, totalChunks)
+	return action == CheckpointResume, err
 }
 
 // BuildWizardForm constructs the interactive Huh form for the given state pointers and options.

@@ -229,12 +229,30 @@ func TestResolveConfigAndPrepareCheckpointManifest(t *testing.T) {
 		t.Fatalf("expected resolveConfigAndProbe with --resume to restore config from manifest, got cfg=%+v err=%v", resumedCfg, err)
 	}
 
-	// Test non-resume overwrites with fresh manifest (0 completed)
+	// Test non-resume overwrites with fresh manifest (0 completed) and removes stale segments
+	staleSeg := filepath.Join(workDir, "seg_00001.mkv")
+	_ = os.WriteFile(staleSeg, []byte("old-segment"), 0o600)
 	cfgNoResume := cfg
 	cfgNoResume.Resume = false
 	_, mFresh, err := prepareCheckpointManifest(cfgNoResume, meta, false)
 	if err != nil || mFresh.CompletedCount() != 0 {
 		t.Fatalf("expected fresh manifest with 0 completed chunks when Resume=false, got count=%d err=%v", mFresh.CompletedCount(), err)
+	}
+	if _, statErr := os.Stat(staleSeg); !os.IsNotExist(statErr) {
+		t.Fatal("expected stale segment file to be deleted when starting fresh without resume")
+	}
+
+	// Test --drop CLI flag deletes checkpoint directory and exits 0
+	if _, err := state.MarkChunkCompleted(workDir, mFresh, 0, "seg_00001.mkv", "sha1"); err != nil {
+		t.Fatal(err)
+	}
+	var dropOut bytes.Buffer
+	dropCode := runApp(context.Background(), func() {}, []string{"--drop", inputPath}, inspector, &FakeCLIProcessExecutor{}, &dropOut, true)
+	if dropCode != 0 || !strings.Contains(dropOut.String(), "descartado") {
+		t.Fatalf("expected --drop to exit 0 with confirmation, got code=%d out=%q", dropCode, dropOut.String())
+	}
+	if _, statErr := os.Stat(workDir); !os.IsNotExist(statErr) {
+		t.Fatalf("expected workDir %q to be deleted by --drop", workDir)
 	}
 
 	// Test resolveConfigAndProbe rejects invalid scale

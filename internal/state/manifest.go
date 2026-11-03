@@ -224,6 +224,25 @@ func FindExistingManifest(inputPath string) (string, *Manifest, bool) {
 	return "", nil, false
 }
 
+// DropCheckpoints removes any existing .aniup_<filename>_<scale>x checkpoint directories for inputPath.
+// Example: removed, err := state.DropCheckpoints("/videos/ep01.mkv")
+func DropCheckpoints(inputPath string) ([]string, error) {
+	if inputPath == "" {
+		return nil, fmt.Errorf("invalid empty inputPath: expected video path to drop checkpoints")
+	}
+	var removed []string
+	for _, scale := range []int{config.DefaultScale, config.AlternateScale} {
+		workDir := WorkDirPath(inputPath, scale)
+		if _, err := os.Stat(workDir); err == nil {
+			if rmErr := os.RemoveAll(workDir); rmErr != nil {
+				return removed, fmt.Errorf("failed to remove checkpoint directory %q: %w", workDir, rmErr)
+			}
+			removed = append(removed, workDir)
+		}
+	}
+	return removed, nil
+}
+
 // CompletedCount returns the number of chunks marked as completed.
 // Example: done := manifest.CompletedCount()
 func (m *Manifest) CompletedCount() int {

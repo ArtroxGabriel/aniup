@@ -102,6 +102,7 @@ aniup \
 | `--chunk-size` | Quantidade de frames por chunk extraídos em `/dev/shm` | `600` |
 | `--encoder` | Encoder NVIDIA NVENC (`hevc_nvenc` \| `av1_nvenc`) | `hevc_nvenc` |
 | `--resume` | Retomar automaticamente de um checkpoint existente compatível | `false` |
+| `--drop` | Descartar e remover o diretório de checkpoint existente do vídeo e sair | `false` |
 | `--keep-chunks` | Manter o diretório oculto `.aniup_<video>_<scale>x/` após a concatenação final | `false` |
 | `-h`, `--help` | Exibe a ajuda completa de uso | — |
 
