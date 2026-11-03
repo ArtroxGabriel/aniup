@@ -1,0 +1,43 @@
+version: '3'
+
+tasks:
+  default:
+    desc: Lista as tasks disponíveis
+    cmds:
+      - task --list
+
+  deps:check:
+    desc: Executa a validação de ambiente e dependências locais
+    cmds:
+      - go run ./cmd/aniup doctor
+
+  build:
+    desc: Compila o binário otimizado
+    cmds:
+      - mkdir -p bin
+      - go build -ldflags="-s -w" -o bin/aniup ./cmd/aniup
+
+  install:
+    desc: Compila e instala o binário em ~/.local/bin/aniup
+    deps: [build]
+    cmds:
+      - mkdir -p ~/.local/bin
+      - cp -f bin/aniup ~/.local/bin/aniup
+      - chmod +x ~/.local/bin/aniup
+
+  test:
+    desc: Executa os testes unitários com race detection
+    cmds:
+      - go test -v -race -cover ./...
+
+  lint:
+    desc: Executa linters e verificação estática
+    cmds:
+      - go vet ./...
+      - golangci-lint run ./...
+
+  clean:
+    desc: Remove arquivos compilados e limpa diretórios temporários em /dev/shm
+    cmds:
+      - rm -rf bin/
+      - rm -rf /dev/shm/aniup_*
