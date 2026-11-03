@@ -54,7 +54,10 @@ func (f *FakeProbeAndDepsInspector) RunCommand(_ context.Context, name string, _
 // FakeCLIProcessExecutor simulates ffmpeg and ncnn execution for end-to-end CLI tests.
 type FakeCLIProcessExecutor struct{}
 
-func (f *FakeCLIProcessExecutor) Run(_ context.Context, _ []string, _ string, args ...string) error {
+func (f *FakeCLIProcessExecutor) Run(ctx context.Context, _ []string, _ string, args ...string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if len(args) > 0 {
 		last := args[len(args)-1]
 		if strings.HasSuffix(last, ".mkv") {
@@ -65,7 +68,10 @@ func (f *FakeCLIProcessExecutor) Run(_ context.Context, _ []string, _ string, ar
 	return nil
 }
 
-func (f *FakeCLIProcessExecutor) RunWithStderr(_ context.Context, _ []string, onLine func(string), _ string, _ ...string) error {
+func (f *FakeCLIProcessExecutor) RunWithStderr(ctx context.Context, _ []string, onLine func(string), _ string, _ ...string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if onLine != nil {
 		onLine("100.00%")
 	}
@@ -161,6 +167,15 @@ func TestRunDoctorAndRunAppEndToEnd(t *testing.T) {
 	if codeRun != 0 {
 		t.Fatalf("expected exit code 0 for headless runApp, got %d (%s)", codeRun, out.String())
 	}
+
+	// Arrange canceled context (user pressed 'q') -> must return exit code 0 without "Erro:"
+	out.Reset()
+	canceledCtx, cancelNow := context.WithCancel(context.Background())
+	cancelNow()
+	codePaused := runApp(canceledCtx, func() {}, fullArgs, inspector, &FakeCLIProcessExecutor{}, &out, true)
+	if codePaused != 0 || strings.Contains(out.String(), "Erro:") {
+		t.Fatalf("expected exit code 0 on user pause (context.Canceled), got code=%d out=%q", codePaused, out.String())
+	}
 }
 
 func TestResolveConfigAndPrepareCheckpointManifest(t *testing.T) {
@@ -202,6 +217,16 @@ func TestResolveConfigAndPrepareCheckpointManifest(t *testing.T) {
 	_, m2, err := prepareCheckpointManifest(cfg, meta, false)
 	if err != nil || m2.CompletedCount() != 1 {
 		t.Fatalf("expected resumed manifest with 1 completed chunk, got count=%d err=%v", m2.CompletedCount(), err)
+	}
+
+	// Test resume with ONLY input path + --resume (no other flags!) loads config from manifest without Wizard
+	resumeOnlyFlags := CLIFlags{
+		InputPath: inputPath,
+		Resume:    true,
+	}
+	resumedCfg, _, err := resolveConfigAndProbe(context.Background(), inspector, report, resumeOnlyFlags)
+	if err != nil || resumedCfg.Model != "realesr-animevideov3" || resumedCfg.Scale != 2 {
+		t.Fatalf("expected resolveConfigAndProbe with --resume to restore config from manifest, got cfg=%+v err=%v", resumedCfg, err)
 	}
 
 	// Test non-resume overwrites with fresh manifest (0 completed)

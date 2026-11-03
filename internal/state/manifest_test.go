@@ -140,3 +140,43 @@ func TestManifestLifecycleSaveLoadCompatibilityAndMarkCompleted(t *testing.T) {
 		t.Fatal("expected manifest to be incompatible when input hash differs")
 	}
 }
+
+func TestFindExistingManifestDetectsValidCheckpointForInputFile(t *testing.T) {
+	// Arrange
+	tmpDir := t.TempDir()
+	inputPath := filepath.Join(tmpDir, "movie.mp4")
+	if err := os.WriteFile(inputPath, []byte("movie-content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inputHash, err := state.ComputePartialSHA256(inputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.RunConfig{
+		InputPath: inputPath,
+		Engine:    config.EngineRealESRGAN,
+		Model:     "realesr-animevideov3",
+		Scale:     2,
+		Encoder:   config.EncoderHEVCNVENC,
+		ChunkSize: 600,
+	}
+	workDir := state.WorkDirPath(inputPath, 2)
+	m := state.NewManifest(cfg, inputHash, 1200, "24/1")
+	if _, err := state.MarkChunkCompleted(workDir, m, 0, "seg_00001.mkv", "sha1"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Act
+	foundDir, foundManifest, ok := state.FindExistingManifest(inputPath)
+
+	// Assert
+	if !ok || foundDir != workDir || foundManifest.CompletedCount() != 1 {
+		t.Fatalf("expected FindExistingManifest to find checkpoint with 1 completed chunk, got ok=%v dir=%q", ok, foundDir)
+	}
+	if _, _, ok := state.FindExistingManifest(""); ok {
+		t.Fatal("expected false for empty inputPath")
+	}
+	if _, _, ok := state.FindExistingManifest(filepath.Join(tmpDir, "missing.mp4")); ok {
+		t.Fatal("expected false for nonexistent file")
+	}
+}

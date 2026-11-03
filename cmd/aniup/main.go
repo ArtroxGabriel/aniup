@@ -190,7 +190,12 @@ func executeMainFlow(
 	if err != nil {
 		return err
 	}
-	return runPipelineWithDashboard(ctx, cancel, report, procExec, cfg, meta, workDir, manifest, headless)
+	err = runPipelineWithDashboard(ctx, cancel, report, procExec, cfg, meta, workDir, manifest, headless)
+	if errors.Is(err, context.Canceled) {
+		_, _ = fmt.Fprintf(out, "\n✓ Pausado com segurança (/dev/shm limpo). Para retomar de onde parou, execute:\n  aniup %q\n", cfg.InputPath)
+		return nil
+	}
+	return err
 }
 
 func resolveConfigAndProbe(
@@ -199,28 +204,13 @@ func resolveConfigAndProbe(
 	report deps.CheckReport,
 	flags CLIFlags,
 ) (config.RunConfig, probe.VideoMetadata, error) {
-	chunkSize := flags.ChunkSize
-	if chunkSize <= 0 {
-		chunkSize = config.DefaultChunkSize
-	}
-	initial := config.RunConfig{
-		InputPath:  flags.InputPath,
-		OutputPath: flags.OutputPath,
-		Engine:     config.EngineType(flags.Engine),
-		Model:      flags.Model,
-		Scale:      flags.Scale,
-		Profile:    config.VRAMProfile(flags.Profile),
-		ChunkSize:  chunkSize,
-		Encoder:    config.EncoderType(flags.Encoder),
-		Resume:     flags.Resume,
-		KeepChunks: flags.KeepChunks,
-	}
+	initial := buildInitialConfigFromFlags(flags)
 	if NeedsWizard(flags) {
-		wizCfg, err := tui.RunWizard(initial, report.AvailableEngines(), report.ShmFreeBytes)
+		resolved, err := resolveFromCheckpointOrWizard(initial, report.AvailableEngines(), report.ShmFreeBytes)
 		if err != nil {
 			return config.RunConfig{}, probe.VideoMetadata{}, err
 		}
-		initial = wizCfg
+		initial = resolved
 	}
 	meta, err := probe.ProbeFile(ctx, inspector, report.FFprobePath, initial.InputPath)
 	if err != nil {
@@ -235,6 +225,69 @@ func resolveConfigAndProbe(
 		return config.RunConfig{}, probe.VideoMetadata{}, err
 	}
 	return initial, meta, nil
+}
+
+func buildInitialConfigFromFlags(flags CLIFlags) config.RunConfig {
+	chunkSize := flags.ChunkSize
+	if chunkSize <= 0 {
+		chunkSize = config.DefaultChunkSize
+	}
+	return config.RunConfig{
+		InputPath:  flags.InputPath,
+		OutputPath: flags.OutputPath,
+		Engine:     config.EngineType(flags.Engine),
+		Model:      flags.Model,
+		Scale:      flags.Scale,
+		Profile:    config.VRAMProfile(flags.Profile),
+		ChunkSize:  chunkSize,
+		Encoder:    config.EncoderType(flags.Encoder),
+		Resume:     flags.Resume,
+		KeepChunks: flags.KeepChunks,
+	}
+}
+
+func resolveFromCheckpointOrWizard(
+	initial config.RunConfig,
+	availableEngines []config.EngineType,
+	freeShmBytes uint64,
+) (config.RunConfig, error) {
+	if _, existing, ok := state.FindExistingManifest(initial.InputPath); ok {
+		resume := initial.Resume
+		if !resume {
+			var err error
+			resume, err = tui.PromptResumeCheckpoint(existing.CompletedCount(), len(existing.Chunks))
+			if err != nil {
+				return config.RunConfig{}, err
+			}
+		}
+		if resume {
+			return configFromManifest(initial, existing), nil
+		}
+	}
+	return tui.RunWizard(initial, availableEngines, freeShmBytes)
+}
+
+func configFromManifest(initial config.RunConfig, m *state.Manifest) config.RunConfig {
+	profile := initial.Profile
+	if profile == "" {
+		profile = config.ProfileTurbo
+	}
+	outPath := initial.OutputPath
+	if outPath == "" {
+		outPath = config.DefaultOutputPath(initial.InputPath, m.Scale, m.Model)
+	}
+	return config.RunConfig{
+		InputPath:  initial.InputPath,
+		OutputPath: outPath,
+		Engine:     config.EngineType(m.Engine),
+		Model:      m.Model,
+		Scale:      m.Scale,
+		Profile:    profile,
+		ChunkSize:  m.ChunkSize,
+		Encoder:    config.EncoderType(m.Encoder),
+		Resume:     true,
+		KeepChunks: initial.KeepChunks,
+	}
 }
 
 func prepareCheckpointManifest(

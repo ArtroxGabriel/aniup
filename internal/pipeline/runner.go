@@ -62,6 +62,9 @@ func (o *OSProcessExecutor) Run(ctx context.Context, env []string, name string, 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		return fmt.Errorf("%s failed (%w): %s", name, err, stderr.String())
 	}
 	return nil
@@ -94,7 +97,13 @@ func (o *OSProcessExecutor) RunWithStderr(
 			onStderrLine(scanner.Text())
 		}
 	}
-	return cmd.Wait()
+	if err := cmd.Wait(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		return err
+	}
+	return nil
 }
 
 // Runner orchestrates chunked RAM extraction, NCNN upscaling, atomic NVENC encoding, and final concatenation.

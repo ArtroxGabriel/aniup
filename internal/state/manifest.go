@@ -204,6 +204,26 @@ func IsCompatible(m *Manifest, inputSHA256 string, cfg config.RunConfig) bool {
 		m.ChunkSize == cfg.ChunkSize
 }
 
+// FindExistingManifest checks whether a valid checkpoint manifest with completed chunks exists for inputPath (2x or 4x).
+// Example: workDir, m, ok := state.FindExistingManifest("/videos/ep01.mkv")
+func FindExistingManifest(inputPath string) (string, *Manifest, bool) {
+	if inputPath == "" {
+		return "", nil, false
+	}
+	inputHash, err := ComputePartialSHA256(inputPath)
+	if err != nil {
+		return "", nil, false
+	}
+	for _, scale := range []int{config.DefaultScale, config.AlternateScale} {
+		workDir := WorkDirPath(inputPath, scale)
+		m, loadErr := LoadManifest(workDir)
+		if loadErr == nil && m.InputSHA256 == inputHash && m.CompletedCount() > 0 {
+			return workDir, m, true
+		}
+	}
+	return "", nil, false
+}
+
 // CompletedCount returns the number of chunks marked as completed.
 // Example: done := manifest.CompletedCount()
 func (m *Manifest) CompletedCount() int {
